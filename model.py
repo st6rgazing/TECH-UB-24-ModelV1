@@ -154,6 +154,9 @@ def evaluate(model, train, test, features):
         "r2_baseline":   r2_baseline,
         "rmse_baseline": rmse_baseline,
         "mean_train":    train[OUTCOME].mean(),
+        "y_true":        test[OUTCOME].values,
+        "y_pred":        y_test_pred,
+        "y_baseline":    baseline_pred,
     }
 
 
@@ -212,28 +215,36 @@ def predict_and_decide(model, df_template: pd.DataFrame, features: list[str],
 def quantify_value(metrics: dict, train: pd.DataFrame) -> None:
     """
     Assumptions (labelled):
-      • Waste cost = 25% of revenue for over-prepared items  [assumption]
-      • Stockout cost = 30% of missed revenue               [assumption]
-      • ~200 baking decisions per month                      [assumption]
+      • Over-prediction (bake too much) → waste cost = 25% of error  [assumption]
+      • Under-prediction (sell out)     → stockout cost = 30% of error [assumption]
+      • ~200 baking decisions per month                               [assumption]
+    Rates applied row-by-row: over-predictions use 25%, under-predictions use 30%.
     """
-    rmse_base    = metrics["rmse_baseline"]
-    rmse_v1      = metrics["rmse_test"]
     waste_rate   = 0.25
     miss_rate    = 0.30
     decisions_mo = 200
 
-    avg_cost_per_eur_error = (waste_rate + miss_rate) / 2
-    baseline_cost_mo = rmse_base * avg_cost_per_eur_error * decisions_mo
-    v1_cost_mo       = rmse_v1   * avg_cost_per_eur_error * decisions_mo
-    saving_mo        = baseline_cost_mo - v1_cost_mo
+    def row_cost(y_true, y_pred):
+        errors = y_pred - y_true
+        cost = np.where(errors > 0,
+                        errors * waste_rate,
+                        np.abs(errors) * miss_rate)
+        return cost.mean()
+
+    baseline_cost_per = row_cost(metrics["y_true"], metrics["y_baseline"])
+    v1_cost_per       = row_cost(metrics["y_true"], metrics["y_pred"])
+
+    baseline_cost_mo  = baseline_cost_per * decisions_mo
+    v1_cost_mo        = v1_cost_per       * decisions_mo
+    saving_mo         = baseline_cost_mo  - v1_cost_mo
 
     print("\n── Value quantification (assumptions labelled) ──────────────────")
     print(f"  Avg hourly revenue (training):        €{metrics['mean_train']:.2f}")
-    print(f"  Baseline RMSE (test):                 €{rmse_base:.2f}")
-    print(f"  v1 RMSE (test):                       €{rmse_v1:.2f}")
-    print(f"  Assumed waste rate:                   {waste_rate*100:.0f}%  [assumption]")
-    print(f"  Assumed stockout cost rate:           {miss_rate*100:.0f}%  [assumption]")
+    print(f"  Assumed waste cost rate (over):       {waste_rate*100:.0f}%  [assumption]")
+    print(f"  Assumed stockout cost rate (under):   {miss_rate*100:.0f}%  [assumption]")
     print(f"  Assumed bake decisions/month:         {decisions_mo}  [assumption]")
+    print(f"  Avg cost per decision — baseline:     €{baseline_cost_per:.2f}")
+    print(f"  Avg cost per decision — v1:           €{v1_cost_per:.2f}")
     print(f"  Estimated monthly cost — baseline:    €{baseline_cost_mo:.0f}")
     print(f"  Estimated monthly cost — v1:          €{v1_cost_mo:.0f}")
     print(f"  Estimated monthly saving from v1:     €{saving_mo:.0f}")
